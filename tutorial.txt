@@ -1,0 +1,19 @@
+================
+Twisted Tutorial
+================
+
+Network I/O 101
+===============
+
+Twisted is a library that can help you easily build networked applications in Python. While Twisted manages to abstract away most of the low-level network details, having at least a high-level understanding of network I/O will be very helpful.
+
+At the very basic level, when you connect two processes using a mechanism that allows them to exchange data, you have networked them. It helps imagining two physical machines connected via a piece wire (FOOTNOTE: this metaphor doesn't stand for some mechanisms like UDP, but let's ignore that for now).
+
+Once two machines are connected via a piece of wire, they can start using it. A single machine can write data at its end of the wire, and after some time it will arrive at the other end of the wire. Also, at any time data may arrive on the same end of the wire.
+
+We've already found one complication of network programming - data may arrive at any time. So some kind of mechanism must be in place in order to deal with this data.
+
+
+
+
+
