@@ -331,6 +331,54 @@ In this case, two argument `urlFetched` requires are `url` and `start` so, let's
 
 ..code: proxy3.py 8:20
 
+A caching proxy server
+----------------------
+
+So, we have a reasonable implementation of a proxy server. Let's add another feature, the proxy server should cache responses and return subsequent requests to the same address from the cache.
+
+Let's start the simple way, by having just an in-memory dict that will store an address as the key and the response as the value. Since the cache must be shared, we will inject it to each protocol instance we create by subclassing the factory and defining our own `buildProtocol` method.
+
+(SIDENOTE: You might have expected we'd use the key-value store we implemented at the start of this tutorial - have patience, we need to cover a few important topics first to avoid potential confusion)
+
+Let's first handle the case where we do have the data in the cache:
+
+..code:
+
+    if url in self.cache:
+        data = self.cache[url]
+        self.urlFetched(data, url, start)
+
+Note how can just call `urlFetched` with the cached data. It is, after all, just a simple python method. Since it implements a well-defined piece of functionality, we can just reuse it.
+
+In the case where we don't have the data in the cache, we need to do three things:
+
+a) call `client.getPage` to initiate the request
+b) store the data in the cache
+c) call `urlFetched` with the data
+
+We know how to go from a) to b) - just define a `storeInCache` method and attach it as a callback. Going from b) to c) is a bit more tricky. We could just call `urlFetched` from `storeInCache` but it would look messy:
+
+..code:
+
+    def storeInCache(self, data, url, start):
+        self.cache[url] = data
+        self.urlFetched(data, url, start)
+
+We are passing in extra arguments (`start`) that will just be forwarded to `urlFetched`. A nicer thing to do would be to allow callbacks to be chained together so that one will run after another. This way every callback function can do just one thing (and be reused the same way we reused `urlFetched` when we already had the data available).
+
+Fortunately this is such a common pattern that `Deferred` supports it natively - just do another `addCallback`. To allow for more interesting behaviour, callbacks are required to return a result that will get passed to the next callback and so on. In our particular case, `storeInCache` will need to return the raw data so that `urlFetched` can access them. Of course, if you forget to return something in your callback functions, the next callback will receive `None`.
+
+..code: proxy4.py 16:31
+
+That's better! We have two plain methods that do one specific thing, and we chain them together. There's another little thing we can do to improve this code though - eliminate the duplication of typing `urlFetched` twice. What we should do instead is have a utility function like `getCachedPage(url, cache)` that will contain all the cache logic and will return just a deferred we'll attach `urlFetched` to.
+
+..code: proxy5.py 5:29
+
+That's better! `getCachedPage` is now a reusable function that can be used in other places as well (and of course, being simple and standalone, it can be easily tested as well). Client code doesn't care how storing is done (or even if it will be done at all) - client code just cares about the 'url fetched' event.
+
+
+
+
 
 
 
