@@ -62,7 +62,7 @@ The next step is to install a network event handler. The first event we care abo
 
 The design pattern of something that creates instances is called a Factory, so our "connection made" handler will be a twisted.internet.interfaces.IProtocolFactory. 
 
-Twisted fortunately has concrete implementations of those interfaces. So we will be using twisted.internet.protocol.ServerFactory (since we are building a server) and we'll subclass twisted.internet.protocol.Protocol to provide our custom behaviour.
+Twisted fortunately has concrete implementations of those interfaces. So we will be using twisted.internet.protocol.Factory and we'll subclass twisted.internet.protocol.Protocol to provide our custom behaviour.
 
 (FOOTNOTE: While Twisted has default implementations for those interfaces, you are free to implement your own should you ever need to. Just make sure you conform to the interface. It usually is a better idea to subclass BaseProtocol than to start from scratch.)
 
@@ -127,7 +127,7 @@ Memcached is useful because multiple clients can connect to it and shared the sa
 
 .. code: memcached_server.py 53:63
 
-Our ServerFactory now has an `__init__` method, and we also override the `buildProtocol` method to create a protocol instance with specific arguments.
+Our Factory now has an `__init__` method, and we also override the `buildProtocol` method to create a protocol instance with specific arguments.
 
 (SIDENOTE: You will find a lot of Twisted examples or code that uses a slightly different approach of relying on the default implementation of `twisted.internet.protocol.Factory` that sets a `factory` attribute on all protocol instances it creates, pointing to itself. This way a protocol instance can access shared state by doing `self.factory.store`. While this is normal python usage, newcomers tend to be confused and assume some magic is going on. It is recommended that a Protocol class accepts any dependencies as arguments for code clarity and of course testability.)
 
@@ -376,9 +376,53 @@ That's better! We have two plain methods that do one specific thing, and we chai
 
 That's better! `getCachedPage` is now a reusable function that can be used in other places as well (and of course, being simple and standalone, it can be easily tested as well). Client code doesn't care how storing is done (or even if it will be done at all) - client code just cares about the 'url fetched' event.
 
+Writing clients
+===============
 
+Time to put the memcached server we wrote to good use - we'll use that as our cache layer for the proxy server. This way, we can share the same cache between multiple proxy servers.
 
+In order to do that, we need to somehow connect to the cache server, and speak the expected protocol. Our final aim is to have a `getMemcachedPage` that will do all the background cache checking and return a `Deferred` instance that will carry the data.
 
+For simplicity, we'll implement the different commands as separate protocol classes, and we'll close the connection to the server once we get a response. Let's start with the `get` command protocol. 
+
+(SIDENOTE: Memcached actually encourages you to maintain a single persistent to the server for as long as you can, in order to save the the connect/teardown overhead associated with every new connection. We'll get to that a bit later. Meanwhile, if you're actually looking for a real memcached client implementation, `twisted.protocols.memcached` has what you need)
+
+..code: memcached_client.py 1:31
+
+The first interesting observation is that this protocol has an actual method named `get` that we can call once we are connected. `rawDataReceived` and `lineReceived` look a lot like the server implementation, with one difference - when we receive the `END` line, we know the server has finished responding so we print whatever value we received (may be None) and we close the connection. The factory is very simple as well.
+
+..code: memcached_client.py 33:43
+
+In order to actually talk to a server, we need to create an endpoint. Since this is the client side, we use a `TCP4ClientEndpoint` that takes a reactor, a host name and a port. Then instead of `listen` we call `connect` passing in our factory instance. Notice that this call returns a `Deferred`, since the connection will happen in the future. When a connection has been made, a protocol instance will be created, and passed to our callback function, which will call `get`.
+
+Note how the server version of listening didn't return any Deferred - this is because when listening we accept multiple connections on the same port, and multiple protocol instances will be created. However for cients, every `connect` call corresponds to exactly one protocol instance, so we can get a reference to it and make any interaction we want. A factory is still used to create those instances, of course.
+
+(SIDENOTE: Some older, mostly equivalent APIs are `reactor.connectTCP` and `ClientCreator`. The endpoint API is the preferred one though).
+
+Creating Deferreds
+------------------
+
+In the above implementation, we print the value to stdout when we receive it. This is not very useful - we need to give this value to the code that called our `get` method. But, when the `get` method is called we have no value - the value will come in the future. By now you should be guessing that `get` should return a `Deferred` instance that we'll trigger once the server finishes responding.
+
+..code: memcached_client2.py 1:22
+
+So, what `get` does is create a `Deferred` instance (it is of course a plain python class!), keep a reference to it and return it to anyone interested. When we receive a final response, we call `self.deferred.callback`, passing in a tuple of the value and the flags. Calling `callback` will start running the callback chain, passing in the result. Remember that callback functions must accept the result a single first argument, so we need to pass just a single argument to `callback`, hence the need to wrap it in a tuple.
+
+..code: memcached_client2.py 36:51
+
+Finally, now that `get` returns a callback, we can add a callback to it to get the value and flags. Unfortunately there's a bit of nesting going on - we'll fix that in a while.
+
+Note also that we started to do the proper thing and moved any connection specific stuff to happen only when you run the module, because we're going to be importing this module very very soon.
+
+Let's finish things off by implementing the `set` command and making it a bit easier to use.
+
+..code: memcached_client3.py 1:15
+
+This protocol is much simpler - just write out the correct line, the raw data and finish with a new line, then wait for the 'STORED' response.
+
+..code: memcached_client3.py 18:34
+
+Using it is also straightforward - create an endpoint, connect, get the protocol instance, call 'set', wait for the confirmation that it was actually set. Notice that we ignore the returned value (using the common underscore name to indicate we will not do anything with the argument), since the callback passes None anyway. We must accept one argument (and call `callback` with one too) in order to conform to the `Deferred` API.
 
 
 
