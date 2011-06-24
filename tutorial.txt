@@ -484,6 +484,12 @@ If we have a value in the cache, just return it. Otherwise fetch the page. When 
 
 (TODO: I think this desperately needs a diagram showing the flow. Perhaps there's a clearer way to write it too?)
 
+TUTORIAL PLAN
+=============
+
+* errbacks
+* persistent connections
+
 
 
 
