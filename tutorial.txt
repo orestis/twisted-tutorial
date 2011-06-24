@@ -232,6 +232,27 @@ When scheduling a call into the future, it is useful to be able to retain a refe
 
 Running the above snippet you will see how 'HI' is never printed because the call was cancelled. Note also that you can only call `cancel` on a call that is still active. Calling `cancel` on a call that has either been called or has been cancelled will raise an Exception.
 
+So, in our case, we, will change our memcached store implementation to look like this:
+
+..code: memcached2.py
+
+When dealing with calls that will arrive later, we must take care that a left-over timeout will expire a key prematurely, so we cancel any timeouts that may or may not be pending before we schedule any new ones.
+
+All we need to change to support timeouts is we import `Memcached` from `memcached2` instead of `memcached1`.
+
+A summary
+---------
+
+So, in bullet form, here's key points covered so far:
+
+* To do anything in Twisted, you need to start a reactor loop by doing `reactor.run()`
+* To find a piece of wire to listen on, you need to instantiate an appropriate endpoint.
+* To handle new connections, you need a protocol factory that will build protocol instances.
+* Protocol instances only deal with a single connection and only live as long as that.
+* It is your responsibility to deal with shared state by injecting it into the protocol instances you create. Subclass a server factory.
+* Data will arrive in a protocol instance at arbitrary chunks. Test is with a byte at a time to make sure you are not making any false assumptions.
+* Implementing protocols correctly is hard, try to reuse as much code as possible.
+* To schedule a function call later in time, use `reactor.callLater` and keep a reference to the return value if you want to do something with it before it's called.
 
 
 
