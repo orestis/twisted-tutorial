@@ -254,6 +254,44 @@ So, in bullet form, here's key points covered so far:
 * Implementing protocols correctly is hard, try to reuse as much code as possible.
 * To schedule a function call later in time, use `reactor.callLater` and keep a reference to the return value if you want to do something with it before it's called.
 
+Something even cooler - a proxy server
+======================================
+
+A memcached server is cool, but let's dive a bit deeper. Let's write a proxy server that will receive a url followed by a newline, it will fetch the url (following any redirects) and return it to the client. After it has finished sending all the data, it must close the connection to the client. Of course it has to support multiple simultaneous connections. Let's also make it print various information messages on its stdout, such as time took for each request.
+
+(SIDENOTE: For reasons that will become apparent soon, you must not do this in Twisted code. If you're looking for an actually working proxy server example code, see `proxy2.py`. If you're looking for an actual HTTP proxy server, see `twisted.web.proxy`)
+
+..code: proxy1.py 6:17
+
+The interesting bit here is the ProxyProtocol. Since we are expecting a url followed by a newline, we are inheriting from `basic.LineReceiver`. For simplicity, we ignore lines not beginning with 'http://', record the start time, use `urllib2.urlopen` to get a file-like object back, then read from it, write the data to the transport, then call `loseConnection`. Twisted will make sure that all pending data writes will be finished before the connection is closed. We finally print the time it took to fetch the url.
+
+Test it with a simple telnet connection, and you will see it works fine. Let's try more than one simultaneous clients. We would expect that clients will receive a response at roughly the time it takes the server to fetch it, perhaps with a little bit of overhead.
+
+If you're following this at home, download `timingclient.py` and run it like so: `python timingclient.py 127.0.0.1` <list of space separated urls>`. Here are some actual results:
+
+
+Site           Server         Client
+=====          ======         ======
+A              0.771           3.817
+B              0.567           2.026
+C              1.457           2.026
+D              1.019           3.815
+-----          ------         ------
+Total:         3.813           3.817
+
+Wait a minute, this looks wrong. We expected the server and the client to take roughly the same amount of time, but it looks very off. If we look closely, it looks like some connections had to wait until other connections were finished, and in fact two of them had to wait for the total time it took the server to finish *all* requests.
+
+Eagle-eyed readers will have noticed the previous sidenote - our code is wrong. The culprit is the `urllib2.urlopen` call. When diving into the actual implementation of that call, we'll find that at its basic level it opens a plain socket to a remote machine and reads data from there. However, as we said at the very start, you cannot have single-threaded programs making blocking network connections, because the reactor loop will stall and will not have the chance to root unrelated data to other handlers. One potential way to deal with this will be to make the call in a different thread, but since this would introduce the usual threading issues and would defeat the purpose of using with an asynchronous I/O library in the first place!
+
+(SIDENOTE: In some cases, like database interactions that cannot be done asynchronously because of the need to support atomic transactions, using threads is the correct approach. For actual database support look at `twisted.enterprise.dbapi`. For general threading support, use `reactor.deferToThread`. More about deferreds soon).
+
+
+
+
+
+
+
+
 
 
 
