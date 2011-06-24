@@ -1,4 +1,4 @@
-from twisted.internet import protocol, defer
+from twisted.internet import protocol
 from memcached_client2 import MemcachedGetProtocol
 from memcached_client3 import MemcachedSetProtocol
 
@@ -13,40 +13,32 @@ class MemcachedClient(object):
         self.endpoint = endpoint
 
     def get(self, key):
-        deferredValue = defer.Deferred()
         d = self.endpoint.connect(getFactory)
         def got_protocol(p):
-            d2 = p.get(key)
-            def got_response(r):
-                deferredValue.callback(r)
-            d2.addCallback(got_response)
+            return p.get(key)
         d.addCallback(got_protocol)
-        return deferredValue
+        return d
 
     def set(self, key, value, flags, timeout=0):
-        deferredValue = defer.Deferred()
         d = self.endpoint.connect(setFactory)
         def got_protocol(p):
-            d2 = p.set(key, value, flags, timeout)
-            def got_response(r):
-                deferredValue.callback(r)
-            d2.addCallback(got_response)
+            return p.set(key, value, flags, timeout)
         d.addCallback(got_protocol)
-        return deferredValue
+        return d
 
 if __name__ == '__main__':
-
     from twisted.internet import reactor, endpoints
     endpoint = endpoints.TCP4ClientEndpoint(reactor, '127.0.0.1', 11211)
-
     client = MemcachedClient(endpoint)
-    d = client.set('a', 'asdf', 0)
-    def set(_):
-        print 'SET'
+    d = client.get('a')
+    def got_value(r):
+        print 'GOT', r
         reactor.stop()
 
-    d.addCallback(set)
+    d.addCallback(got_value)
     reactor.run()
+
+
 
 
 

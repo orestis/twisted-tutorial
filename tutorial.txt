@@ -424,6 +424,42 @@ This protocol is much simpler - just write out the correct line, the raw data an
 
 Using it is also straightforward - create an endpoint, connect, get the protocol instance, call 'set', wait for the confirmation that it was actually set. Notice that we ignore the returned value (using the common underscore name to indicate we will not do anything with the argument), since the callback passes None anyway. We must accept one argument (and call `callback` with one too) in order to conform to the `Deferred` API.
 
+Notice how we don't even bother to subclass `Factory`, and we just set the protocol class directly onto the instance. This is a very common idiom in Twisted when we don't really need the factory to do anything else than building protocol instances with the default behaviour.
+
+Create an API
+-------------
+
+So far we're using those protocols from the command line, but it's time to actually embed them into our proxy server. For that, we'll create a simple utility class that will do the connection for us. Since it's the callers concern where the connection should be made, we'll expect an endpoint as a parameter.
+
+(SIDENOTE: People familiar with the previous Twisted APIs will realise this is a very nice improvement. By passing in different endpoints, we can connect to a server over SSL or Unix sockets or anything that endpoints support, without changing a single line of code.)
+
+..code: memcached_client4.py 1:13
+
+We import the protocols, create a couple of factories (outside the class, since they don't have any kind of state) and define the constructor of our client.
+
+..code: memcached_client4.py 15:35
+
+Now this looks ugly! There are 3 levels of nesting there, and the reason is that we have a chain of callbacks that all have potential "pauses" in them because they are accessing the network, so we need to unravel all the chain to get to the final value. 
+
+It turns out that this is again such a common requirement that Deferred has built-in support for it. All you need to to is return a *new* Deferred instance from a callback function. When this happens, the chain of callbacks is suspended until the result of that new Deferred comes back. When it does, it is passed to the next callback. This will look easier in code:
+
+..code: memcached_client5.py 15:27
+
+This looks much cleaner. Let's see what's going on. First, we connect to the server, getting a deferred back. When that deferred fires, it will give us an instance of the relevant protocol, connected to the server. We can then call `get` or `set` on the protocol. Those calls will also return deferreds, which we just return. This is all transparent to the client:
+
+..code: memcached_client5.py 29:39
+
+Let's walk the execution chain, just as the connection happens:
+
+* connection is established
+* `got_protocol` is executed
+    * `p.get` is executed, returning a deferred
+* Since a callback returned a deferred, the execution pauses here, instead of proceeding to the `got_value` callback the client attached.
+* The server finishes responding
+* The deferred that paused the execution is called back with the returned value from the server
+* `got_value` is executed with the value of the previous callback, which is the return value from the server.
+
+The point to keep is that whenever you need to access the network in one of your callbacks, just return the deferred you get and everything will proceed normally when that is finished.
 
 
 
