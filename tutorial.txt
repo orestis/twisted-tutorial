@@ -11,11 +11,17 @@ At the very basic level, when you connect two processes using a mechanism that a
 
 Once two machines are connected via a piece of wire, they can start using it. A single machine can write data at its end of the wire, and after some time it will arrive at the other end of the wire. Also, at any time data may arrive on the same end of the wire.
 
+Event-driven programming
+------------------------
+
 We've already found one complication of network programming - data may arrive at any time. So some kind of mechanism must be in place in order to read the data and forward it to interested parties.
 
 This is a form of event-driven programming, similar to GUI programming. GUI programs wait for a user to generate events such as "mouse clicked" or "key pressed" and will run specific methods to handle those events. When doing network programming, the events are streams of bytes arriving at your end of the wire.
 
 The usual way to deal with events arrinving at any possible time is to have a constant running loop that will periodically check if there is a new event and forward it to whoever might be listening. In GUI programs the OS maintains a queue of events and your program will have a UI loop that pulls events off this queue.
+
+Blocking I/O
+------------
 
 Unfortunately, network programs have one extra bit of complication. I f you try to read data off a socket (that's the end of the wire) that has no data in it, your program will suspend execution until some data arrives. For small programs that just need to do one thing, this is not a problem. However, when you have a long-running process, such a web server, that needs to stay responsive to other clients, this becomes an issue.
 
@@ -26,6 +32,9 @@ This approach, while completely correct and proven over the years, has some draw
 * Every thread or process launched will consume some amount of memory. This means that the number of concurrent connections is limited by the available memory size.
 * Writing large multi-threaded programs is hard. Avoiding starvation, deadlocks, guarding access to shared data with locks, synchronisation etc is very hard to get right and even harder to debug.
 * Writing multi-process programs means that you have to use some kind of inter-process communication to pass data back and forth, which has a certain overhead.
+
+Non-blocking I/O
+----------------
 
 The alternative approach is to open the socket in a non-blocking mode. This way, before you commit to read or write to a socket, you can check to see if it is ready. If it is, the OS guarantees that the operation will not block. If it isn't, you just check again a bit later. 
 
@@ -46,19 +55,25 @@ First we need to setup the event loop. In Twisted we do this by using a global o
 
 When you run the snippet above, you will see that your program goes into an infinite loop, because the reactor loop has taken over. You will need to kill your process with ctrl-c to get your shell back.
 
+Defining behaviour
+------------------
+
 The next step is to install a network event handler. The first event we care about is someone connecting to our server. When this happens, we should create a separate instance of a class for each connection, to ensure client-specific state is separated (if we were doing this with threads, we'd use a threadlocal object. However Twisted is single-threaded, so we can use plain Object Oriented Programming approaches). The classes that we'll be creating must implement twisted.internet.interfaces.IProtocol.
 
 The design pattern of something that creates instances is called a Factory, so our "connection made" handler will be a twisted.internet.interfaces.IProtocolFactory. 
 
 Twisted fortunately has concrete implementations of those interfaces. So we will be using twisted.internet.protocol.ServerFactory (since we are building a server) and we'll subclass twisted.internet.protocol.Protocol to provide our custom behaviour.
 
-(FOOTNOTE: While Twisted has default implementations for those interfaces, you are free to implement your own should you ever need to. Just make sure you conform to the interface.)
+(FOOTNOTE: While Twisted has default implementations for those interfaces, you are free to implement your own should you ever need to. Just make sure you conform to the interface. It usually is a better idea to subclass BaseProtocol than to start from scratch.)
 
 .. code: helloworld.py 1:10
 
 So, at first we do the necessary imports. Then we define a very simple protocol, that will print whatever data arrives in its standard output. Then we define a factory that on every connection will create instances of the HelloWorldProtocol. Note how none of this knows or cares of where the data comes from. Twisted will deal with creating instances of the protocol as new connections arrive, and will call 'dataReceived' whenever data becomes available.
 
 (SIDENOTE: `dataReceived` will be called with arbitrary amounts of data. The protocol class is required to buffer incoming data and try to divide them in meaningful messages. The best way is to assume you will receive data one byte at a time. That said, Twisted has a lot of useful protocol subclasses that help with usual message formats such as line-separated, length prefixed etc. See `twisted.protocols` for a complete list.)
+
+Listening on a port
+-------------------
 
 The final piece is installing the factory. Since we want a TCP server, we will attach it to a specific TCP port. To do this, we need to use something called an Endpoint.
 
@@ -72,8 +87,86 @@ So, we start again with necessary imports. We then create an endpoint instance a
 
 (SIDENOTE: Endpoints are a fairly recent (in Twisted time) API. If you have an older version of Twisted, you will need to use the equivalent but less flexible approach of doing `reactor.listenTCP(8000, factory)`.)
 
+Trying it out
+-------------
+
 Try running the complete listing on a shell (watch out for firewalls blocking access!) and from another shell do `telnet 127.0.0.1 8000`. Start typing data into telnet (telnet will only send them across the wire when you hit enter - do not rely on this behaviour!). Kill the telnet process by sending the escape character (usually `ctrl-]`) followed by `ctrl-c`. Try starting multiple parallel telnet sessions. You'll find that the server quite happily accepts multiple connections.
 `
+
+Sending data back to the client
+===============================
+
+We've already made a huge step - we wrote a non-blocking server that accepts data from multiple clients in only a few lines of code. While this may be useful if you want to do things like logging, at most cases you'd want to send something back to the client.
+
+The way to send data to the client is by using the `transport` attribute on our protocol instance. This is an implementation of `twisted.internet.interfaces.ITransport` we can think about it as the end of the wire you write data into. This happens by using `write` or `writeSequence`.
+
+So, let's extend our server to make it send every piece of data it receives back to the client, but uppercased! We do this in our `dataReceived` handler.
+
+..code: upperserver.py 3:9
+
+So just like that we can send data back to the client.
+
+Something a bit more useful
+===========================
+
+So far we've covered the very basics of writing a server. However, even with this small knowledge we can go very very far. We will now write an almost-compliant memcached server that you can use on your webserver with any compatible memcached client.
+
+The basic stuff
+---------------
+
+At its core, memcached is a key-value store. So our implementation will be based on a plain python dictionary.
+
+.. code: memcached1.py
+
+Note we are ignoring the flags and timeout value for simplicity. By the end of this tutorial we'll have built a truly compliant memcached server.
+
+Sharing state
+-------------
+
+Memcached is useful because multiple clients can connect to it and shared the same data. Therefore, we will need to create a single instance of `Memcached` and share it between different protocol instances. We do this by passing a reference to it when we build a protocol instance in our factory.
+
+.. code: memcached_server.py 53:63
+
+Our ServerFactory now has an `__init__` method, and we also override the `buildProtocol` method to create a protocol instance with specific arguments.
+
+(SIDENOTE: You will find a lot of Twisted examples or code that uses a slightly different approach of relying on the default implementation of `twisted.internet.protocol.Factory` that sets a `factory` attribute on all protocol instances it creates, pointing to itself. This way a protocol instance can access shared state by doing `self.factory.store`. While this is normal python usage, newcomers tend to be confused and assume some magic is going on. It is recommended that a Protocol class accepts any dependencies as arguments for code clarity and of course testability.)
+
+Specification
+-------------
+
+This factory will not change throughout the tutorial. Let's see the protocol next. We should start at the memcached protocol spefication (actually, a subset of it - get and set commands).
+
+A clients sends a 'get' command by sending the following string of bytes: `get <key>\r\n` where the key is a string. A 'set' command is initiated by first sending `set <key> <flags> <timeout> <length>\r\n` where flags is an integer that can be retrieved later, timeout is the number of seconds this entry will stay around and length is the length of the data that will represent the value. Then the client sends <length>number of bytes, followed by `\r\n`. Keys may not contain spaces or newlines, and must be less than 250 characters.
+
+Example:
+
+.. pre:
+
+    set example_key 0 3600 13\r\n
+    example_value\r\n
+
+(line break added for clarity)
+
+Decoding messages
+-----------------
+
+Remember how `dataReceived` is called with any data that is available and it is the protocol's job to decode that into actual messages? In this case, it seems that splitting at lines is important. We could do it ourselves by buffering the data and looking for new line delimiters, but this a so frequent example that Twisted has already support for it, in the form of `twisted.protocols.LineReceiver`. This is a Protocol subclass that instead of dataReceived exposes `lineReceived` method that will only be called with complete lines (without the delimiter).
+
+.. code: memcached_server.py 1:16
+
+Much easier - now lineReceived just parses the arguments and delegates ot other methods to do the actual work.
+
+
+
+and `rawDataReceived`. We can switch between rawDataMode and lineMode at any time by calling `setRawMode` and `setLineMode`.
+
+
+
+
+
+
+
+
 
 
 
