@@ -11,7 +11,77 @@ At the very basic level, when you connect two processes using a mechanism that a
 
 Once two machines are connected via a piece of wire, they can start using it. A single machine can write data at its end of the wire, and after some time it will arrive at the other end of the wire. Also, at any time data may arrive on the same end of the wire.
 
-We've already found one complication of network programming - data may arrive at any time. So some kind of mechanism must be in place in order to deal with this data.
+We've already found one complication of network programming - data may arrive at any time. So some kind of mechanism must be in place in order to read the data and forward it to interested parties.
+
+This is a form of event-driven programming, similar to GUI programming. GUI programs wait for a user to generate events such as "mouse clicked" or "key pressed" and will run specific methods to handle those events. When doing network programming, the events are streams of bytes arriving at your end of the wire.
+
+The usual way to deal with events arrinving at any possible time is to have a constant running loop that will periodically check if there is a new event and forward it to whoever might be listening. In GUI programs the OS maintains a queue of events and your program will have a UI loop that pulls events off this queue.
+
+Unfortunately, network programs have one extra bit of complication. I f you try to read data off a socket (that's the end of the wire) that has no data in it, your program will suspend execution until some data arrives. For small programs that just need to do one thing, this is not a problem. However, when you have a long-running process, such a web server, that needs to stay responsive to other clients, this becomes an issue.
+
+The usual way of avoiding suspening execution, or "blocking", is to put independent socket operations in different threads or even processes. This way, one can have a central service that just handles new connections, but the actual data back-and-forth happens in parallel. 
+
+This approach, while completely correct and proven over the years, has some drawbacks:
+
+* Every thread or process launched will consume some amount of memory. This means that the number of concurrent connections is limited by the available memory size.
+* Writing large multi-threaded programs is hard. Avoiding starvation, deadlocks, guarding access to shared data with locks, synchronisation etc is very hard to get right and even harder to debug.
+* Writing multi-process programs means that you have to use some kind of inter-process communication to pass data back and forth, which has a certain overhead.
+
+The alternative approach is to open the socket in a non-blocking mode. This way, before you commit to read or write to a socket, you can check to see if it is ready. If it is, the OS guarantees that the operation will not block. If it isn't, you just check again a bit later. 
+
+This sounds like a very good solution, and indeed you can implement it yourself using a good socket library. Unfortunately, there are a lot of things that need to be done just in the right way to ensure that no network operations will ever block, and if you need to support multiple platforms then there are subtle edge cases you need to worry about.
+
+Fortunately, Twisted has solved all those problems and will give you non-blocking network I/O on most major platforms for free, leaving you free to focus on your actual application instead of worrying about low-level network details (FOOTNOTE: All abstractions are leaky. An understanding of the basics of networks can be very beneficial). Twisted provides an event loop that will forward data arriving from the network to interested handlers, and will also take care of sending data over the network to remote machines. This event loop all runs in a single thread, removing any reason to worry about synchronising data access or any other threading issues.
+
+My first server
+===============
+
+Let's see an actual example of this. We'll write a server that listens on a TCP port, allows multiple clients to connect at the same time, and will print all data to its standard output.
+
+First we need to setup the event loop. In Twisted we do this by using a global object called "reactor":
+
+..code:
+    from twisted.internet import reactor
+    reactor.run()
+
+When you run the snippet above, you will see that your program goes into an infinite loop, because the reactor loop has taken over. You will need to kill your process with ctrl-c to get your shell back.
+
+The next step is to install a network event handler. The first event we care about is someone connecting to our server. When this happens, we should create a separate instance of a class for each connection, to ensure client-specific state is separated (if we were doing this with threads, we'd use a threadlocal object. However Twisted is single-threaded, so we can use plain Object Oriented Programming approaches). The classes that we'll be creating must implement twisted.internet.interfaces.IProtocol.
+
+The design pattern of something that creates instances is called a Factory, so our "connection made" handler will be a twisted.internet.interfaces.IProtocolFactory. 
+
+Twisted fortunately has concrete implementations of those interfaces. So we will be using twisted.internet.protocol.ServerFactory (since we are building a server) and we'll subclass twisted.internet.protocol.Protocol to provide our custom behaviour.
+
+(FOOTNOTE: While Twisted has default implementations for those interfaces, you are free to implement your own should you ever need to. Just make sure you conform to the interface.)
+
+.. code: helloworld.py 1:10
+
+So, at first we do the necessary imports. Then we define a very simple protocol, that will print whatever data arrives in its standard output. Then we define a factory that on every connection will create instances of the HelloWorldProtocol. Note how none of this knows or cares of where the data comes from. Twisted will deal with creating instances of the protocol as new connections arrive, and will call 'dataReceived' whenever data becomes available.
+
+(SIDENOTE: `dataReceived` will be called with arbitrary amounts of data. The protocol class is required to buffer incoming data and try to divide them in meaningful messages. The best way is to assume you will receive data one byte at a time. That said, Twisted has a lot of useful protocol subclasses that help with usual message formats such as line-separated, length prefixed etc. See `twisted.protocols` for a complete list.)
+
+The final piece is installing the factory. Since we want a TCP server, we will attach it to a specific TCP port. To do this, we need to use something called an Endpoint.
+
+Endpoints are a bit like our end of the wire. You create an endpoint of a specific type - in our case a TCP endpoint - with transport-specific paramters - in our case, a port number. Then you attach a factory instance to it.
+
+.. code: helloworld.py 11:17
+
+So, we start again with necessary imports. We then create an endpoint instance and a factory instance and bind them together. Finally we start the reactor loop.
+
+(SIDENOTE: While the reactor is used like a global object, new code is advised to accept reactor as a parameter. This allows for much better testing, passing special-behavior reactors, and in the future will allow for multiple reactors running together)
+
+(SIDENOTE: Endpoints are a fairly recent (in Twisted time) API. If you have an older version of Twisted, you will need to use the equivalent but less flexible approach of doing `reactor.listenTCP(8000, factory)`.)
+
+Try running the complete listing on a shell (watch out for firewalls blocking access!) and from another shell do `telnet 127.0.0.1 8000`. Start typing data into telnet (telnet will only send them across the wire when you hit enter - do not rely on this behaviour!). Kill the telnet process by sending the escape character (usually `ctrl-]`) followed by `ctrl-c`. Try starting multiple parallel telnet sessions. You'll find that the server quite happily accepts multiple connections.
+`
+
+
+
+
+Asynchronous Programming 101
+============================
+
+So, we've found a way to deal with data coming from a socket in a non-blocking fashion, so we can use an event loop that will forward them to our handlers. However, since 
 
 
 
