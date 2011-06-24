@@ -285,6 +285,52 @@ Eagle-eyed readers will have noticed the previous sidenote - our code is wrong. 
 
 (SIDENOTE: In some cases, like database interactions that cannot be done asynchronously because of the need to support atomic transactions, using threads is the correct approach. For actual database support look at `twisted.enterprise.dbapi`. For general threading support, use `reactor.deferToThread`. More about deferreds soon).
 
+So we have finally hit a snag - there are *a lot* of libraries and tools out there that use blocking sockets by default. This means we cannot use them in Twisted code (unless we do it in a thread - see sidenote). Fortunately Twisted comes with a lot of batteries built-in, and there's a wealth of Twisted-compatible alternatives to choose from. Look for any library that has the `tx` prefix. For a community-maintained listing, look at http://launchpad.net/tx .
+
+In this particular case we need a library that can do HTTP requests without using blocking sockets. Twisted has this built-in in `twisted.web.client.getPage`. This is a utility function that will take a url, connect to it, and return the data some time in the future.
+
+Wait, what?
+-----------
+
+Don't panic, we're still using Python and there's no magic way to receive data in the future. What we'll do instead is going to install another network event handler. Similar to how we have a factory handling "connection made" events, protocol instances handling "data received" calls, we'll install a handler for a "requested url fetch finished" event. After all, we're still receiving data over the network and we don't know when it'll arrive.
+
+In fact, `getPage` is implemented by using factories and protocols. A connection is made to a server, a new protocol instance is created that asks the server for a specific resource, and buffers data passed into its `dataReceived` method. When the server signals it's finished sending data, the protocol can then fire the "requested url fetch finished" event to anyone interested, passing the collected data along.
+
+However, while the 'connection made' and 'data received' events are common network events, it'd madness to have a separate API for every possible event that someone can think of. What we have instead is a way to allow defining custom events and attaching arbitrary handlers to them.
+
+So, what the call to `getPage` will return is an instance of a `twisted.internet.defer.Deferred`. A Deferred instance is a specific event that will happen in the future. In this particular case, the event is 'the url you've requested has finished loading', so the event carries some data as well (similar to how `dataReceived` carries data as well, but more high-level as it will return *all* the data and not chunks).
+
+So now that we have an event, we should attach an event handler function to it. In our particular case, the event handler function might look like this:
+
+..code: proxy2.py 15:19
+
+We attach it to the deffered instance by using `addCallback`.
+
+And in context:
+
+..code: proxy2.py 8:21
+
+If you run `proxy2.py` and make the same requests as before, you will get results that look something like this:
+
+Site           Server         Client
+=====          ======         ======
+A              0.850           0.853
+B              0.486           0.488
+C              1.582           1.584
+D              0.999           1.000
+-----          ------         ------
+Total:         3.918           1.585
+
+So, each request arrived at the client at roughly the same time it took the server to fetch it, and all requests executed in parallel. So the client finished when the longest request did. This mean all the requests executed in parallel and any network I/O happened in a non-blocking way.
+
+So, to recap - `getPage` will return a `Deferred` instance that represents the 'url fetched' event. We define a function named `urlFetched` that accepts a single argument, `data`. We register this function by calling `deferredData.addCallback(urlFetched)`. When all the data from the url has been fetched, `urlFetched` will be called with the fetched data, and it will write the data to the transport and close the connection. Note that since we are defining this function inside the scope of `lineReceived`, we can access the `url` and `start` variables. In Twisted-speak, `urlFetched` is called a "callback function", hence the `addCallback` method name.
+
+Defining nested functions can become confusing very soon, so `addCallback` can accept arbitrary arguments (both positional and keyword) that will be passed to the callback function. The first argument will always be the data the Deferred carries (even if it is None).
+
+In this case, two argument `urlFetched` requires are `url` and `start` so, let's make it accept it and pass it via the `addCallback` call:
+
+..code: proxy3.py 8:20
+
 
 
 

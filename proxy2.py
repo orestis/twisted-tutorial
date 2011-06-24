@@ -1,0 +1,33 @@
+import time
+from twisted.web import client
+
+from twisted.protocols import basic
+
+class ProxyProtocol(basic.LineReceiver):
+
+    def lineReceived(self, url):
+        if not url.startswith('http://'):
+            return
+        start = time.time()
+        print 'fetching', url
+        deferredData = client.getPage(url)
+
+        def urlFetched(data):
+            self.transport.write(data)
+            self.transport.loseConnection()
+            print 'fetched', url,
+            print 'in', time.time() - start
+
+        deferredData.addCallback(urlFetched)
+
+from twisted.internet import protocol
+class ProxyFactory(protocol.ServerFactory):
+    protocol = ProxyProtocol
+
+from twisted.internet import reactor, endpoints
+
+endpoint = endpoints.TCP4ServerEndpoint(reactor, 8000)
+factory = ProxyFactory()
+endpoint.listen(factory)
+
+reactor.run()
