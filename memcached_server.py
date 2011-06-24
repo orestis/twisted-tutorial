@@ -2,7 +2,6 @@ from twisted.protocols import basic
 
 class MemcachedServerProtocol(basic.LineReceiver):
     def __init__(self, store):
-        basic.LineReceiver.__init__(self)
         self.store = store
 
     def lineReceived(self, line):
@@ -30,16 +29,16 @@ class MemcachedServerProtocol(basic.LineReceiver):
         self.key = key
         self.flags = flags
         self.timeout = timeout
-        self.length = length + 2
+        self.length = length
         self.setRawMode()
         
     def rawDataReceived(self, data):
         self.buffer.append(data)
         raw = ''.join(self.buffer)
-        if len(raw) >= self.length:
-            value = raw[:self.length-2]
-            rest = raw[self.length:]
-            self.store.set(self.key, value)
+        if len(raw) >= self.length + len('\r\n'):
+            value = raw[:self.length]
+            rest = raw[self.length + len('\r\n'):]
+            self.store.set(self.key, value, self.flags, self.timeout)
             self.sendLine('STORED')
             self.setLineMode(rest)
 
@@ -50,9 +49,16 @@ from twisted.internet import protocol
 
 class MemcachedServerFactory(protocol.ServerFactory):
     def __init__(self):
-        protocol.ServerFactory.__init__(self)
         self.store = Memcached()
 
     def buildProtocol(self, addr):
         p = MemcachedServerProtocol(self.store)
         return p
+
+from twisted.internet import reactor, endpoints
+
+endpoint = endpoints.TCP4ServerEndpoint(reactor, 11211)
+factory = MemcachedServerFactory()
+endpoint.listen(factory)
+
+reactor.run()

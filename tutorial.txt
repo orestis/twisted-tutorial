@@ -118,7 +118,7 @@ At its core, memcached is a key-value store. So our implementation will be based
 
 .. code: memcached1.py
 
-Note we are ignoring the flags and timeout value for simplicity. By the end of this tutorial we'll have built a truly compliant memcached server.
+Note we are ignoring the timeout value for simplicity. By the end of this tutorial we'll have built a truly compliant memcached server.
 
 Sharing state
 -------------
@@ -152,13 +152,86 @@ Decoding messages
 
 Remember how `dataReceived` is called with any data that is available and it is the protocol's job to decode that into actual messages? In this case, it seems that splitting at lines is important. We could do it ourselves by buffering the data and looking for new line delimiters, but this a so frequent example that Twisted has already support for it, in the form of `twisted.protocols.LineReceiver`. This is a Protocol subclass that instead of dataReceived exposes `lineReceived` method that will only be called with complete lines (without the delimiter).
 
-.. code: memcached_server.py 1:16
+.. code: memcached_server.py 1:15
 
 Much easier - now lineReceived just parses the arguments and delegates ot other methods to do the actual work.
 
+The spec for responding to a `get` request is straightforward. If the requested key is in the store, we respond with `VALUE <key> <flags> <length>\r\n`, then the raw data followed by '\r\n' then `END\r\n`. If the key is not in the store, just send `END\r\n`.
+
+.. code: memcached_server.py 16:25
+
+So, this is exactly what we do. We use the `sendLine` convenience method of `basic.LineReceiver` when we need to have `\r\n` delimiters, and `self.transport.write` when we need to send raw data.
+
+The spec for responding to a `set` request is a bit more involved. This is because the client will send `set <key> <flags> <timeout> <length>\r\n` followed by `length` bytes of data followed by `\r\n`. Since the raw data *can* contain newlines or indeed any binary data, we cannot use `lineReceived` as it will try to parse them. Fortunately `basic.LineReceiver` has a way to do just that, called `setRawMode`. Calling this will deactivate the line parsing behaviour and data will be delivered instead using the `rawDataReceived` method. When we want to switch the line parsing mode on again, we'll call `setLineMode` passing in any superfluous data we might have received.
+
+When the server has managed to store the value, it will send `STORED` back.
+
+(SIDENOTE: This kind of behaviour is very usual when designing or implementing protocols. Fortunately Twisted has already support for a lot of protocols in `twisted.protocols` and a lot of utility class ready for subclassing in `twisted.protocols.basic`.)
+
+(TODO: find if the client is allowed to send new requests if a `STORED` is pending)
+
+..code: memcached_server.py 27:43
+
+So, when `handle_set` is called the first thing it does is initialise some instance variables that will be passed on to the actual store later on (if this seems a bit unsafe, remember that this protocol instance will handle data only from a single client connection), and then goes into raw data mode.
+
+`rawDataReceived` is then called repeatedly, buffering the received data. Once `<length>` amount of bytes has been received, plus the newline required by the spec, we store everything in the store, reply with 'STORED\r\n' and switch line mode back on. Since we might have received more data than we can handle (for example, the start of a new command) we need to pass that in `setLineMode` so that the line parsing mechanism can pass them into the next call of `lineReceived`.
+
+(SIDENOTE: Notice that so far everything we have been doing for implementing the protocol is not Twisted specific and with a bit of API massaging it could be reused with any similar networking library. In fact, there is a PEP being written currently that hopefully be in Python 3.4 that will provide a library-agnostic API that various protocols can provide so that they can be used with any networking library that supports the Python Async API.)
+
+..code: memcached_server.py 58:64
 
 
-and `rawDataReceived`. We can switch between rawDataMode and lineMode at any time by calling `setRawMode` and `setLineMode`.
+(TODO: make sure we haven't done anything stupid and very incompatible in the above code)
+
+(TODO: why oh why aren't those classes new-style objects? How is someone supposed to know if something has an __init__ or not?)
+
+Finally we just instantiate an endpoint and a factory and bind them together. We are using the memcached default port, 11211. Run this example and have a play with it using any memcached-compatible client and see it behaves quite as you expected (at least when using only the get and set commands). (WARNING: This implementation is not suitable for production systems and certainly not supposed to be exposed to untrusted clients)
+
+(TODO: perhaps we should point people to an actual production implementation here?)
+
+Adding timeouts
+---------------
+
+The implementation, apart from its gaping security holes, has another problem - it ignores the timeout setting completely. This will mean that at some point your server will run out of memory and even worse, clients would expect things to be expiring and they would receive incorrect results. Let's fix that.
+
+If you have a function that needs to be called some time in the future, `reactor.callLater` does this for you. It works like so:
+
+..code:
+
+    from twisted.internet import reactor
+
+    def print_it(s):
+        print s
+    reactor.callLater(5, print_it, "5 seconds passed")
+    reactor.callLater(10, print_it, "10 seconds passed")
+    reactor.callLater(11, reactor.stop)
+
+    reactor.run()
+
+If you run the above snippet you'll see that it will print two lines after 5 and 10 seconds respectively, and after 11 seconds it will stop and exit to the command line.
+
+(SIDENOTE: Careful readers may have read that reactor also has a `listenTCP` method, and we now also show `callLater`. The global reactor instance actually implements numerous interfaces, all found in `twisted.internet.reactor`)
+
+When scheduling a call into the future, it is useful to be able to retain a reference to it so you can cancel it or reschedule it. `callLater` returns an `IDelayedCall` instance that you can call `cancel`, `reset` or `delay` on.
+
+..code: 
+
+    def print_it(p):
+        print p
+
+    def abort(call):
+        if call.active():
+            print 'CANCELLING'
+            call.cancel()
+
+    delayedCall = reactor.callLater(5, print_it, 'HI')
+    reactor.callLater(4, abort, delayedCall)
+    reactor.callLater(6, reactor.stop)
+
+    reactor.run()
+
+Running the above snippet you will see how 'HI' is never printed because the call was cancelled. Note also that you can only call `cancel` on a call that is still active. Calling `cancel` on a call that has either been called or has been cancelled will raise an Exception.
+
 
 
 
