@@ -376,6 +376,8 @@ That's better! We have two plain methods that do one specific thing, and we chai
 
 That's better! `getCachedPage` is now a reusable function that can be used in other places as well (and of course, being simple and standalone, it can be easily tested as well). Client code doesn't care how storing is done (or even if it will be done at all) - client code just cares about the 'url fetched' event.
 
+You might be wandering that the `defer.succeed` is doing there. Since the `getCachedPage` function needs to return a `Deferred` so that client code can attach callbacks to it without caring where the data came from, we need to wrap actual data in a `Deferred` instance. `defer.succeed` does just that - it's a way to convert an already existing result into a deferred that will trigger its callback chain immediately.
+
 Writing clients
 ===============
 
@@ -461,9 +463,26 @@ Let's walk the execution chain, just as the connection happens:
 
 The point to keep is that whenever you need to access the network in one of your callbacks, just return the deferred you get and everything will proceed normally when that is finished.
 
+Let's bring it all together
+---------------------------
 
+Remember our proxy server? Let's integrate it with the key-value store. We'll need to change it a bit so that instead of a cache instance protocols will share a Memcached client instance.
 
+We don't need to change very much in our Protocol and Factory - instead of using `getCachedPage` we use `getMemcachedPage`, and instead of creating a dictionary cache, we use a `MemcachedClient`:
 
+..code: proxy6.py 21:48
+
+Other than that, the client is exactly the same.
+
+The `getMemcachedPage` function is a bit more complicated, albeit more interesting:
+
+..code: proxy6.py 5:19
+
+Everything starts by looking into the cache for the request value. As this returns a deferred, since we now have to go to the network, we need to specify what happens when we receive a response in the `got` callback.
+
+If we have a value in the cache, just return it. Otherwise fetch the page. When the page is fetched, store it in the cache. Since the `set` doesn't return any data, add a lambda callback that will return it to the final client code.
+
+(TODO: I think this desperately needs a diagram showing the flow. Perhaps there's a clearer way to write it too?)
 
 
 
